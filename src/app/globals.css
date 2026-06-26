@@ -1,0 +1,44 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; }
+body { font-family: 'Inter', sans-serif; background: #f8f9fa; color: #1a1a1a; }
+
+.drop-zone {
+  border: 2px dashed #d1d5db;
+  border-radius: 12px;
+  padding: 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: #f9fafb;
+}
+.drop-zone:hover, .drop-zone.dragover { background: #eff6ff; border-color: #3b82f6; }
+.drop-zone.loaded { border-style: solid; border-color: #22c55e; background: #f0fdf4; }
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.badge-fresh    { background: #dcfce7; color: #166534; }
+.badge-moderate { background: #fef9c3; color: #854d0e; }
+.badge-slow     { background: #ffedd5; color: #9a3412; }
+.badge-dead     { background: #fee2e2; color: #7f1d1d; }
+.badge-prime    { background: #dbeafe; color: #1e3a8a; }
+.badge-liberty  { background: #ede9fe; color: #3730a3; }
+.badge-marino   { background: #d1fae5; color: #064e3b; }
+
+.alert-dead     { background: #fee2e2; border-left: 4px solid #ef4444; }
+.alert-slow     { background: #ffedd5; border-left: 4px solid #f97316; }
+.alert-moderate { background: #fef9c3; border-left: 4px solid #eab308; }
+.alert-ok       { background: #dcfce7; border-left: 4px solid #22c55e; }
+
+.action-urgent   { background: #fee2e2; color: #7f1d1d; }
+.action-discount { background: #fef9c3; color: #854d0e; }
+.action-monitor  { background: #dbeafe; color: #1e3a8a; }
+.action-ok       { background: #dcfce7; color: #166534; }
