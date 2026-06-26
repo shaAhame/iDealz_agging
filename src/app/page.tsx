@@ -4,13 +4,14 @@ import dynamic from 'next/dynamic'
 import AlertsPanel from '@/components/AlertsPanel'
 import BranchSummary from '@/components/BranchSummary'
 import AgeingTable from '@/components/AgeingTable'
+import { exportCSV, exportExcel, exportPDF } from '@/lib/export'
 import {
   StockRow, UnsoldRow,
   readExcelFile, extractIMEIsFromPDFBuffer,
   parseStockExcel, parseTransferExcel,
-  buildUnsoldRows, exportToCSV
+  buildUnsoldRows
 } from '@/lib/ageing'
-import { Download, RefreshCw, CheckCircle, Plus, X, Upload } from 'lucide-react'
+import { Download, RefreshCw, CheckCircle, Plus, X, Upload, FileSpreadsheet, FileText } from 'lucide-react'
 
 const AgeChart = dynamic(() => import('@/components/AgeChart'), { ssr: false })
 
@@ -299,8 +300,14 @@ export default function Dashboard() {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {showDash && (
-            <button onClick={() => exportToCSV(unsoldRows)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer', fontWeight: 500 }}>
-              <Download size={14} /> Export CSV
+            <button onClick={() => exportCSV(unsoldRows)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>
+              <Download size={14} /> CSV
+            </button>
+            <button onClick={() => exportExcel(unsoldRows)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, padding: '6px 14px', borderRadius: 8, border: '1px solid #16a34a', background: '#f0fdf4', color: '#15803d', cursor: 'pointer', fontWeight: 500 }}>
+              <FileSpreadsheet size={14} /> Excel
+            </button>
+            <button onClick={() => exportPDF(unsoldRows)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, padding: '6px 14px', borderRadius: 8, border: '1px solid #dc2626', background: '#fef2f2', color: '#dc2626', cursor: 'pointer', fontWeight: 500 }}>
+              <FileText size={14} /> PDF
             </button>
           )}
           <button onClick={reset} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>
