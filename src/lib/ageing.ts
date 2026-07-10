@@ -9,6 +9,7 @@ export interface StockRow {
   rawImei: string
   brand: string
   model: string
+  itemCode: string
   date: Date | null
   location: string
 }
@@ -16,15 +17,10 @@ export interface StockRow {
 export interface UnsoldRow extends StockRow {
   branch: Branch
   transferDate: Date | null
-  // Total age = GRN date → today
   totalDays: number | null
-  // Branch age = transfer date → today (for Liberty/Marino), or GRN date → today (for Prime)
   branchDays: number | null
-  // Phase 1 = days at Prime before transfer
   warehouseDays: number | null
-  // Bucket is based on BRANCH age (how long current branch has held it)
   bucket: AgeStatus
-  // Bucket based on TOTAL age
   totalBucket: AgeStatus
   overdue: number
 }
@@ -72,46 +68,189 @@ export function actionLabel(bucket: AgeStatus, branch: Branch): { label: string;
 }
 
 export function bucketColor(b: AgeStatus): { bg: string; color: string } {
-  return {
+  return ({
     Fresh:        { bg: '#f0fdf4', color: '#166534' },
     Moderate:     { bg: '#fefce8', color: '#854d0e' },
     Slow:         { bg: '#fff7ed', color: '#9a3412' },
     'Dead stock': { bg: '#fef2f2', color: '#7f1d1d' },
     Unknown:      { bg: '#f3f4f6', color: '#6b7280' },
-  }[b]
+  } as any)[b] ?? { bg: '#f3f4f6', color: '#6b7280' }
+}
+
+function guessBrand(name: string): string {
+  const n = name.toUpperCase()
+  if (n.includes('IPHONE') || n.includes('APPLE') || n.includes('AIRTAG') || n.includes('IPAD') || n.includes('MACBOOK')) return 'Apple'
+  if (n.includes('SAMSUNG') || n.includes('GALAXY')) return 'Samsung'
+  if (n.includes('REDMI') || n.includes('XIAOMI') || n.includes('MI ')) return 'Xiaomi'
+  if (n.includes('HUAWEI')) return 'Huawei'
+  if (n.includes('OPPO')) return 'Oppo'
+  if (n.includes('VIVO')) return 'Vivo'
+  if (n.includes('NOKIA')) return 'Nokia'
+  if (n.includes('HONOR')) return 'Honor'
+  if (n.includes('INFINIX')) return 'Infinix'
+  if (n.includes('BLACKVIEW')) return 'Blackview'
+  return 'Other'
+}
+
+function detectBranchFromHeader(headerText: string): Branch {
+  const t = headerText.toUpperCase()
+  if (t.includes('MARINO')) return 'Marino'
+  if (t.includes('LIBERTY') || t.includes('HEAD OFFICE')) return 'Liberty'
+  if (t.includes('PRIME') || t.includes('IDEALZ-PRIME')) return 'Prime'
+  return 'Prime'
+}
+
+function isLocationWiseReport(rows: any[][]): boolean {
+  const flat = rows.slice(0, 4).map(r => (r || []).join(' ')).join(' ').toUpperCase()
+  return flat.includes('LOCATION WISE STOCK') || flat.includes('LOCATION :')
+}
+
+// Location Wise Stock report parser
+// Row N  : ItemCode (col0), ItemName (col5-ish), Qty (col8-ish)
+// Row N+1: empty col0, serial numbers spread across other columns
+function parseLocationWiseReport(rows: any[][], reportDate: Date | null, branch: Branch): StockRow[] {
+  const results: StockRow[] = []
+  let currentItemCode = ''
+  let currentItemName = ''
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || []
+    const col0 = String(row[0] ?? '').trim()
+
+    // Find item name — scan columns for a meaningful name string
+    let itemName = ''
+    for (let c = 1; c < row.length; c++) {
+      const v = String(row[c] ?? '').trim()
+      if (v.length > 5 && /[A-Za-z]/.test(v) && !/^\d+(\.\d+)?$/.test(v)) {
+        itemName = v
+        break
+      }
+    }
+
+    // Product row: col0 has item code starting with letter
+    if (col0 && /^[A-Za-z]/.test(col0) && itemName) {
+      currentItemCode = col0
+      currentItemName = itemName
+      continue
+    }
+
+    // Serial row: col0 is empty, other columns have serials
+    if (!col0 && currentItemCode) {
+      for (let c = 0; c < row.length; c++) {
+        const val = String(row[c] ?? '').trim()
+        if (/^\d{15}$/.test(val)) {
+          results.push({
+            imei: normIMEI(val),
+            rawImei: val,
+            brand: guessBrand(currentItemName),
+            model: currentItemName,
+            itemCode: currentItemCode,
+            date: reportDate,
+            location: branch,
+          })
+        }
+      }
+    }
+  }
+
+  return results
+}
+
+// Read Excel file as raw 2D array
+export async function readExcelRaw(file: File): Promise<{ rows: any[][]; headerText: string }> {
+  const buffer = await file.arrayBuffer()
+  const wb = new ExcelJS.Workbook()
+  await wb.xlsx.load(buffer)
+  const ws = wb.worksheets[0]
+  if (!ws) return { rows: [], headerText: '' }
+  const rows: any[][] = []
+  let headerText = ''
+  ws.eachRow((row: any, rowNum: number) => {
+    const values = (row.values as any[]).slice(1)
+    if (rowNum <= 4) headerText += values.join(' ') + ' '
+    rows.push(values)
+  })
+  return { rows, headerText }
 }
 
 function findColIndex(headers: string[], candidates: string[]): number {
   for (const c of candidates) {
-    const i = headers.findIndex(h => h.trim().toUpperCase() === c.toUpperCase())
+    const i = headers.findIndex(h => String(h).trim().toUpperCase() === c.toUpperCase())
     if (i >= 0) return i
   }
   for (const c of candidates) {
-    const i = headers.findIndex(h => h.trim().toUpperCase().includes(c.toUpperCase()))
+    const i = headers.findIndex(h => String(h).trim().toUpperCase().includes(c.toUpperCase()))
     if (i >= 0) return i
   }
   return -1
 }
 
-export async function readExcelFile(file: File): Promise<Record<string, any>[]> {
-  const buffer = await file.arrayBuffer()
-  const wb = new ExcelJS.Workbook()
-  await wb.xlsx.load(buffer)
-  const ws = wb.worksheets[0]
-  if (!ws) return []
-  const rows: Record<string, any>[] = []
-  let headers: string[] = []
-  ws.eachRow((row: any, rowNum: number) => {
-    const values = (row.values as any[]).slice(1)
-    if (rowNum === 1) {
-      headers = values.map((v: any) => String(v ?? ''))
-    } else {
-      const obj: Record<string, any> = {}
-      headers.forEach((h, i) => { obj[h] = values[i] ?? '' })
-      rows.push(obj)
-    }
+function parseStockExcelRows(rows: any[][]): StockRow[] {
+  if (!rows.length) return []
+  const headers = (rows[0] || []).map((v: any) => String(v ?? ''))
+  const iIdx = findColIndex(headers, ['IMEI', 'imei', 'Serial', 'SERIAL NO'])
+  const dIdx = findColIndex(headers, ['DATE', 'GRN DATE', 'ARRIVAL DATE'])
+  const bIdx = findColIndex(headers, ['BRAND', 'Clean Brand'])
+  const mIdx = findColIndex(headers, ['MODEL', 'PRODUCT', 'DESCRIPTION', 'CATEGORY', 'Item Name'])
+  const cIdx = findColIndex(headers, ['Item Code', 'CODE', 'SKU'])
+  if (iIdx < 0) throw new Error('No IMEI column found in stock file')
+  return rows.slice(1)
+    .filter(r => normIMEI(r[iIdx]).length >= 10)
+    .map(r => ({
+      imei: normIMEI(r[iIdx]),
+      rawImei: String(r[iIdx]),
+      brand: bIdx >= 0 ? String(r[bIdx] ?? '') : guessBrand(mIdx >= 0 ? String(r[mIdx] ?? '') : ''),
+      model: mIdx >= 0 ? String(r[mIdx] ?? '') : '',
+      itemCode: cIdx >= 0 ? String(r[cIdx] ?? '') : '',
+      date: dIdx >= 0 ? parseDateVal(r[dIdx]) : null,
+      location: 'Prime',
+    }))
+}
+
+// Auto-detect file format and parse
+export async function parseStockFile(file: File, reportDate: Date | null, branchHint?: Branch): Promise<StockRow[]> {
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  if (ext === 'pdf') {
+    const buf = await file.arrayBuffer()
+    const { imeis, date } = extractIMEIsFromPDFBuffer(buf)
+    return imeis.map(imei => ({
+      imei, rawImei: imei, brand: '', model: '', itemCode: '',
+      date: reportDate ?? date, location: branchHint ?? 'Prime',
+    }))
+  }
+  const { rows, headerText } = await readExcelRaw(file)
+  if (!rows.length) return []
+  if (isLocationWiseReport(rows)) {
+    const branch = branchHint ?? detectBranchFromHeader(headerText)
+    return parseLocationWiseReport(rows, reportDate, branch)
+  }
+  return parseStockExcelRows(rows)
+}
+
+export async function parseTransferFile(file: File, reportDate: Date | null): Promise<Map<string, Date | null>> {
+  const map = new Map<string, Date | null>()
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  if (ext === 'pdf') {
+    const buf = await file.arrayBuffer()
+    const { imeis, date } = extractIMEIsFromPDFBuffer(buf)
+    imeis.forEach(i => map.set(i, reportDate ?? date))
+    return map
+  }
+  const { rows, headerText } = await readExcelRaw(file)
+  if (!rows.length) return map
+  if (isLocationWiseReport(rows)) {
+    const parsed = parseLocationWiseReport(rows, reportDate, 'Prime')
+    parsed.forEach(r => map.set(r.imei, reportDate))
+    return map
+  }
+  const headers = (rows[0] || []).map((v: any) => String(v ?? ''))
+  const iIdx = findColIndex(headers, ['IMEI', 'imei', 'Serial'])
+  const dIdx = findColIndex(headers, ['DATE', 'TRANSFER DATE', 'GRN DATE'])
+  if (iIdx < 0) throw new Error('No IMEI column found in transfer file')
+  rows.slice(1).filter(r => normIMEI(r[iIdx]).length >= 10).forEach(r => {
+    map.set(normIMEI(r[iIdx]), dIdx >= 0 ? parseDateVal(r[dIdx]) : reportDate)
   })
-  return rows
+  return map
 }
 
 export function extractIMEIsFromPDFBuffer(buffer: ArrayBuffer): { imeis: string[]; date: Date | null } {
@@ -122,47 +261,6 @@ export function extractIMEIsFromPDFBuffer(buffer: ArrayBuffer): { imeis: string[
   return { imeis, date }
 }
 
-export function parseStockExcel(rows: Record<string, any>[]): StockRow[] {
-  if (!rows.length) return []
-  const headers = Object.keys(rows[0])
-  const iIdx = findColIndex(headers, ['IMEI', 'imei'])
-  const dIdx = findColIndex(headers, ['DATE', 'date', 'GRN DATE', 'ARRIVAL DATE'])
-  const bIdx = findColIndex(headers, ['BRAND', 'brand', 'Clean Brand', 'CLEAN BRAND'])
-  const mIdx = findColIndex(headers, ['MODEL', 'model', 'PRODUCT', 'DESCRIPTION', 'CATEGORY'])
-  const lIdx = findColIndex(headers, ['LOCATION', 'location', 'BRANCH', 'branch'])
-  if (iIdx < 0) throw new Error('No IMEI column found in stock file')
-  const iCol = headers[iIdx]
-  const dCol = dIdx >= 0 ? headers[dIdx] : null
-  const bCol = bIdx >= 0 ? headers[bIdx] : null
-  const mCol = mIdx >= 0 ? headers[mIdx] : null
-  const lCol = lIdx >= 0 ? headers[lIdx] : null
-  return rows
-    .filter(r => normIMEI(r[iCol]).length >= 10)
-    .map(r => ({
-      imei: normIMEI(r[iCol]),
-      rawImei: String(r[iCol]),
-      brand: bCol ? String(r[bCol] ?? '') : '',
-      model: mCol ? String(r[mCol] ?? '') : '',
-      date: dCol ? parseDateVal(r[dCol]) : null,
-      location: lCol ? String(r[lCol] ?? '') : 'Prime',
-    }))
-}
-
-export function parseTransferExcel(rows: Record<string, any>[]): Map<string, Date | null> {
-  const map = new Map<string, Date | null>()
-  if (!rows.length) return map
-  const headers = Object.keys(rows[0])
-  const iIdx = findColIndex(headers, ['IMEI', 'imei'])
-  const dIdx = findColIndex(headers, ['DATE', 'date', 'TRANSFER DATE', 'GRN DATE'])
-  if (iIdx < 0) throw new Error('No IMEI column found in transfer file')
-  const iCol = headers[iIdx]
-  const dCol = dIdx >= 0 ? headers[dIdx] : null
-  rows.filter(r => normIMEI(r[iCol]).length >= 10).forEach(r => {
-    map.set(normIMEI(r[iCol]), dCol ? parseDateVal(r[dCol]) : null)
-  })
-  return map
-}
-
 export function buildUnsoldRows(
   stockData: StockRow[],
   libertyIMEIs: Map<string, Date | null>,
@@ -170,79 +268,34 @@ export function buildUnsoldRows(
   salesIMEIs: Set<string>
 ): UnsoldRow[] {
   const today = new Date(); today.setHours(0, 0, 0, 0)
-
-  const daysBetween = (a: Date | null, b: Date): number | null => {
+  const diff = (a: Date | null, b: Date): number | null => {
     if (!a) return null
     const d = new Date(a); d.setHours(0, 0, 0, 0)
     return Math.max(0, Math.floor((b.getTime() - d.getTime()) / 86400000))
   }
-
-  return stockData
-    .filter(r => !salesIMEIs.has(r.imei))
-    .map(r => {
-      let branch: Branch = 'Prime'
-      let transferDate: Date | null = null
-
-      if (libertyIMEIs.has(r.imei)) {
-        branch = 'Liberty'
-        transferDate = libertyIMEIs.get(r.imei) ?? null
-      } else if (marinoIMEIs.has(r.imei)) {
-        branch = 'Marino'
-        transferDate = marinoIMEIs.get(r.imei) ?? null
-      }
-
-      // Total age: GRN → today
-      const totalDays = daysBetween(r.date, today)
-
-      // Warehouse days: GRN → transfer (only for transferred items)
-      const warehouseDays = (branch !== 'Prime' && r.date && transferDate)
-        ? daysBetween(r.date, transferDate)
-        : null
-
-      // Branch age:
-      // - For Liberty/Marino: transfer date → today
-      // - For Prime: GRN date → today (same as totalDays)
-      const branchDays = branch !== 'Prime'
-        ? daysBetween(transferDate, today)
-        : totalDays
-
-      // Primary bucket = branch age (how long THIS branch has held it)
-      const bucket: AgeStatus = branchDays !== null ? ageBucket(branchDays) : 'Unknown'
-      // Secondary bucket = total age
-      const totalBucket: AgeStatus = totalDays !== null ? ageBucket(totalDays) : 'Unknown'
-
-      const threshold = bucketThreshold(bucket)
-      const overdue = branchDays !== null ? Math.max(0, branchDays - threshold) : 0
-
-      return { ...r, branch, transferDate, totalDays, branchDays, warehouseDays, bucket, totalBucket, overdue }
-    })
+  return stockData.filter(r => !salesIMEIs.has(r.imei)).map(r => {
+    let branch: Branch = (r.location as Branch) || 'Prime'
+    let transferDate: Date | null = null
+    if (libertyIMEIs.has(r.imei)) { branch = 'Liberty'; transferDate = libertyIMEIs.get(r.imei) ?? null }
+    else if (marinoIMEIs.has(r.imei)) { branch = 'Marino'; transferDate = marinoIMEIs.get(r.imei) ?? null }
+    const totalDays = diff(r.date, today)
+    const warehouseDays = (branch !== 'Prime' && r.date && transferDate) ? diff(r.date, transferDate) : null
+    const branchDays = branch !== 'Prime' ? diff(transferDate, today) : totalDays
+    const bucket: AgeStatus = branchDays !== null ? ageBucket(branchDays) : 'Unknown'
+    const totalBucket: AgeStatus = totalDays !== null ? ageBucket(totalDays) : 'Unknown'
+    const overdue = branchDays !== null ? Math.max(0, branchDays - bucketThreshold(bucket)) : 0
+    return { ...r, branch, transferDate, totalDays, branchDays, warehouseDays, bucket, totalBucket, overdue }
+  })
 }
 
 export function exportToCSV(rows: UnsoldRow[]): void {
-  const header = [
-    'IMEI', 'Brand', 'Model', 'Branch',
-    'GRN Date', 'Transfer Date',
-    'Total Days', 'Total Age Status',
-    'Warehouse Days (at Prime)',
-    'Branch Days', 'Branch Age Status',
-    'Days Overdue', 'Action'
-  ]
-  const dataRows = rows.map(r => {
+  const header = ['IMEI', 'Brand', 'Model', 'Item Code', 'Branch', 'Report Date', 'Total Days', 'Branch Days', 'Branch Status', 'Days Overdue', 'Action']
+  const fmt = (d: Date | null) => d ? d.toLocaleDateString('en-GB') : ''
+  const data = rows.map(r => {
     const act = actionLabel(r.bucket, r.branch)
-    return [
-      r.rawImei, r.brand, r.model, r.branch,
-      r.date ? r.date.toLocaleDateString('en-GB') : '',
-      r.transferDate ? r.transferDate.toLocaleDateString('en-GB') : '',
-      r.totalDays ?? '', r.totalBucket,
-      r.warehouseDays ?? '',
-      r.branchDays ?? '', r.bucket,
-      r.overdue > 0 ? r.overdue : '',
-      act.label,
-    ]
+    return [r.rawImei, r.brand, r.model, r.itemCode, r.branch, fmt(r.date), r.totalDays ?? '', r.branchDays ?? '', r.bucket, r.overdue > 0 ? r.overdue : '', act.label]
   })
-  const csv = [header, ...dataRows]
-    .map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
-    .join('\n')
+  const csv = [header, ...data].map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
   const a = document.createElement('a')
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
   a.download = `idealz_ageing_${new Date().toISOString().slice(0, 10)}.csv`
